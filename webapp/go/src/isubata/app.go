@@ -466,35 +466,57 @@ func fetchUnread(c echo.Context) error {
 		return c.NoContent(http.StatusForbidden)
 	}
 
-	channels, err := queryChannels()
+	type UnreadCount struct {
+		ChannelID int64 `db:"channel_id"`
+	}
+
+	// 全てのChannel IDを取得する
+	// channels, err := queryChannels()
+	// if err != nil {
+	// 	return err
+	// }
+	// channe table joinする必要なさそう
+	// err := db.Select(&res,
+	// 	`SELECT haveread.message_id
+	// 	FROM channel
+	// 	INNER JOIN haveread ON channel.id = haveread.user_id
+	// 	WHERE haveread.user_id = ?`, userID)
+
+	// resp := []map[string]interface{}{}
+
+	type ChannelAndCount struct {
+		ID    int64 `db:"channel_id"`
+		Count int64 `db:"count"`
+	}
+
+	channelAndCounts := []ChannelAndCount{}
+	err := db.Select(&channelAndCounts,
+		`
+		select channel.id as channel_id, ifnull(t.count, 0) as count from channel left outer join(
+			select sub.channel_id as channel_id, count(sub.channel_id) as count
+			from(
+				select message.channel_id as channel_id 
+				from message 
+				left outer join (
+					select haveread.channel_id, haveread.message_id 
+					from haveread where user_id=?) as haveread
+					on message.channel_id = haveread.channel_id
+					where message.id > haveread.message_id or haveread.message_id is null
+					) as sub
+					group by sub.channel_id
+					) as t
+					on channel.id = t.channel_id;
+		`, userID)
+
 	if err != nil {
 		return err
 	}
 
 	resp := []map[string]interface{}{}
-
-	for _, chID := range channels {
-		lastID, err := queryHaveRead(userID, chID)
-		if err != nil {
-			return err
-		}
-
-		var cnt int64
-		if lastID > 0 {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ? AND ? < id",
-				chID, lastID)
-		} else {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ?",
-				chID)
-		}
-		if err != nil {
-			return err
-		}
+	for _, cc := range channelAndCounts {
 		r := map[string]interface{}{
-			"channel_id": chID,
-			"unread":     cnt}
+			"channel_id": cc.ID,
+			"unread":     cc.Count}
 		resp = append(resp, r)
 	}
 
