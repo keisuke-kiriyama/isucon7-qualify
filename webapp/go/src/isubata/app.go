@@ -5,7 +5,6 @@ import (
 	"crypto/sha1"
 	"database/sql"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -469,81 +468,61 @@ func fetchUnread(c echo.Context) error {
 
 	time.Sleep(time.Second)
 
-	channels, err := queryChannels()
+	type UnreadCount struct {
+		ChannelID int64 `db:"channel_id"`
+	}
+
+	// 全てのChannel IDを取得する
+	// channels, err := queryChannels()
+	// if err != nil {
+	// 	return err
+	// }
+	// channe table joinする必要なさそう
+	// err := db.Select(&res,
+	// 	`SELECT haveread.message_id
+	// 	FROM channel
+	// 	INNER JOIN haveread ON channel.id = haveread.user_id
+	// 	WHERE haveread.user_id = ?`, userID)
+
+	// resp := []map[string]interface{}{}
+
+	type ChannelAndCount struct {
+		ID    int64 `db:"channel_id"`
+		Count int64 `db:"count"`
+	}
+
+	channelAndCounts := []ChannelAndCount{}
+	err := db.Select(&channelAndCounts,
+		`
+		select channel.id as channel_id, ifnull(t.count, 0) as count from channel left outer join(
+			select sub.channel_id as channel_id, count(sub.channel_id) as count
+			from(
+				select message.channel_id as channel_id 
+				from message 
+				left outer join (
+					select haveread.channel_id, haveread.message_id 
+					from haveread where user_id=?) as haveread
+					on message.channel_id = haveread.channel_id
+					where message.id > haveread.message_id or haveread.message_id is null
+					) as sub
+					group by sub.channel_id
+					) as t
+					on channel.id = t.channel_id;
+		`, userID)
+
 	if err != nil {
 		return err
 	}
 
 	resp := []map[string]interface{}{}
-	lastIDs, err := queryHaveReads(userID, channels)
-	if err != nil {
-		return err
-	}
-
-	zeroChannels := make([]int64, 0)
-	zeroChannelsStr := make([]string, 0)
-	for i, chID := range channels {
-		lastID := lastIDs[i]
-		if lastID == 0 {
-			zeroChannels = append(zeroChannels, chID)
-			zeroChannelsStr = append(zeroChannelsStr, strconv.FormatInt(chID, 10))
-		}
-	}
-	mergedResults := make([]string, len(zeroChannels))
-	for _, client := range redisClients {
-		results, err := client.HMGet("message_count", zeroChannelsStr...).Result()
-		if err != nil {
-			return err
-		}
-		for j, result := range results {
-			if result != nil {
-				mergedResults[j] = result.(string)
-			}
-		}
-	}
-	messageCounts := make(map[int64]int64, len(zeroChannels))
-	for i, result := range mergedResults {
-		if result == "" {
-			messageCounts[zeroChannels[i]] = 0
-		} else {
-			messageCounts[zeroChannels[i]], err = strconv.ParseInt(result, 10, 64)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	for i, chID := range channels {
-		lastID := lastIDs[i]
-
-		var cnt int64
-		if lastID > 0 {
-			err = db.Get(&cnt,
-				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ? AND ? < id",
-				chID, lastID)
-		} else {
-			if c, ok := messageCounts[chID]; ok {
-				cnt = c
-			} else {
-				cnt = 0
-			}
-		}
-		if err != nil {
-			return err
-		}
+	for _, cc := range channelAndCounts {
 		r := map[string]interface{}{
-			"channel_id": chID,
-			"unread":     cnt}
+			"channel_id": cc.ID,
+			"unread":     cc.Count}
 		resp = append(resp, r)
 	}
 
-	return streamJSON(c, resp)
-}
-
-func streamJSON(c echo.Context, data interface{}) error {
-	c.Response().Header().Set(echo.HeaderContentType, echo.MIMEApplicationJSONCharsetUTF8)
-	c.Response().WriteHeader(http.StatusOK)
-	return json.NewEncoder(c.Response()).Encode(data)
+	return c.JSON(http.StatusOK, resp)
 }
 
 func getHistory(c echo.Context) error {
