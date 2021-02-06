@@ -366,6 +366,16 @@ func jsonifyMessage(m Message) (map[string]interface{}, error) {
 	return r, nil
 }
 
+type UserAndMessage struct {
+	ID        int64     `db:"id"`
+	CreatedAt time.Time `db:"created_at"`
+	Content   string    `db:"content"`
+
+	UserName        string `db:"name"`
+	UserDisplayName string `db:"display_name"`
+	UserAvatarIcon  string `db:"avatar_icon"`
+}
+
 func getMessage(c echo.Context) error {
 	userID := sessUserID(c)
 	if userID == 0 {
@@ -381,26 +391,40 @@ func getMessage(c echo.Context) error {
 		return err
 	}
 
-	messages, err := queryMessages(chanID, lastID)
+	userAndMessages := []UserAndMessage{}
+	err = db.Select(&userAndMessages,
+		`SELECT message.id, message.created_at, message.content, user.name, user.display_name, user.avatar_icon
+		FROM message 
+		INNER JOIN user ON message.user_id = user.id
+		WHERE message.id > ? AND message.channel_id = ? 
+		ORDER BY id DESC 
+		LIMIT 100`,
+		lastID, chanID)
+
 	if err != nil {
 		return err
 	}
 
 	response := make([]map[string]interface{}, 0)
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
-		r, err := jsonifyMessage(m)
-		if err != nil {
-			return err
+	for i := len(userAndMessages) - 1; i >= 0; i-- {
+		m := userAndMessages[i]
+		r := make(map[string]interface{})
+		r["id"] = m.ID
+		r["user"] = User{
+			Name:        m.UserName,
+			DisplayName: m.UserDisplayName,
+			AvatarIcon:  m.UserAvatarIcon,
 		}
+		r["date"] = m.CreatedAt.Format("2006/01/02 15:04:05")
+		r["content"] = m.Content
 		response = append(response, r)
 	}
 
-	if len(messages) > 0 {
+	if len(userAndMessages) > 0 {
 		_, err := db.Exec("INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at)"+
 			" VALUES (?, ?, ?, NOW(), NOW())"+
 			" ON DUPLICATE KEY UPDATE message_id = ?, updated_at = NOW()",
-			userID, chanID, messages[0].ID, messages[0].ID)
+			userID, chanID, userAndMessages[0].ID, userAndMessages[0].ID)
 		if err != nil {
 			return err
 		}
