@@ -770,6 +770,15 @@ func getIcon(c echo.Context) error {
 	return c.Blob(http.StatusOK, mime, data)
 }
 
+func getPing(c echo.Context) error {
+	resp := []map[string]interface{}{}
+	r := map[string]interface{}{
+		"message": "pong"}
+	resp = append(resp, r)
+
+	return c.JSON(http.StatusOK, resp)
+}
+
 func tAdd(a, b int64) int64 {
 	return a + b
 }
@@ -817,6 +826,8 @@ func main() {
 	e.GET("add_channel", getAddChannel)
 	e.POST("add_channel", postAddChannel)
 	e.GET("/icons/:file_name", getIcon)
+
+	e.GET("/ping", getPing)
 
 	e.Start(":5000")
 }
